@@ -174,11 +174,10 @@ function clickCanvas(event) {
   const col = Math.min(Math.floor(canvasLeft / (CELL_SIZE + 1)), width  - 1);
 
   if (event.ctrlKey) {
-    universe.insert_glider_at(row, col);
+    universe.toggle_cell(row, col);
   } else if (event.shiftKey) {
     universe.insert_pulsar_at(row, col);
   }else {
-//    universe.toggle_cell(row, col);
   universe.insert_glider_at(row, col);
 }
 
