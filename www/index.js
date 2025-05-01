@@ -26,9 +26,9 @@ const clearButton = document.getElementById("clear");
 const memory = (await initWasmPromise).memory;
 
 // Construct the universe, and get its width and height.
-const width  = 128;
-const height = 80;
-const universe = Universe.new(width, height);
+const universe = Universe.new();
+const width  = Universe.width();
+const height = Universe.height();
 
 // Give the canvas room for all of our cells and a 1px border
 // around each of them.

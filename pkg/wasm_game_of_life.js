@@ -51,12 +51,10 @@ export class Universe {
         wasm.__wbg_universe_free(ptr, 0);
     }
     /**
-     * @param {number} width
-     * @param {number} height
      * @returns {Universe}
      */
-    static new(width, height) {
-        const ret = wasm.universe_new(width, height);
+    static new() {
+        const ret = wasm.universe_new();
         return Universe.__wrap(ret);
     }
     clear() {
@@ -68,16 +66,16 @@ export class Universe {
     /**
      * @returns {number}
      */
-    width() {
-        const ret = wasm.universe_width(this.__wbg_ptr);
-        return ret >>> 0;
+    static width() {
+        const ret = wasm.universe_width();
+        return ret;
     }
     /**
      * @returns {number}
      */
-    height() {
-        const ret = wasm.universe_height(this.__wbg_ptr);
-        return ret >>> 0;
+    static height() {
+        const ret = wasm.universe_height();
+        return ret;
     }
     /**
      * @returns {number}

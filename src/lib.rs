@@ -1,9 +1,15 @@
+#![no_std]
+
 #[allow(unused)]
 #[macro_use]
 mod utils;
 
-use std::fmt;
+
 use wasm_bindgen::prelude::*;
+
+const WIDTH:  i32 = 128;
+const HEIGHT: i32 = 80;
+const SIZE: usize = (WIDTH * HEIGHT) as usize;
 
 #[wasm_bindgen]
 #[repr(u8)]
@@ -13,43 +19,94 @@ pub enum Cell {
     Alive = 1,
 }
 
+struct DoubleBuffer<T> {
+    buffer: [T; 2],
+    write: usize,
+}
+
+impl<T: Copy> DoubleBuffer<T> {
+    fn new(data: T) -> Self {
+        let buffer = [data; 2];
+        DoubleBuffer { buffer, write: 1}
+    }
+
+    fn borrow_read_write(&mut self) -> (&T, &mut T) {
+        let (left, right) = self.buffer.split_at_mut(1);
+        let left  = &mut left[0];
+        let right = &mut right[0];
+        match self.write {
+            0 => (right, left),
+            _ => (left, right),
+        }
+    }
+
+    fn borrow_read(&self) -> &T {
+        &self.buffer[1 - self.write]
+    }
+    fn borrow_write(&self) -> &T {
+        &self.buffer[self.write]
+    }
+
+    fn swap_buffers(&mut self) {
+        self.write = 1 - self.write;
+    }
+}
+
 #[wasm_bindgen]
 pub struct Universe {
-    width:  u32,
-    height: u32,
-    cells: Box<[Cell]>,
+    neighbors: [[usize; 8]; SIZE],
+    cells: DoubleBuffer<[Cell; SIZE]>,
 }
 
 /// Public methods, exported to JavaScript.
 #[wasm_bindgen]
 impl Universe {
 
-    pub fn new(width: u32, height: u32) -> Universe {
-        let cells = (0..width * height)
-            .map(|i| {
-                if i % 2 == 0 || i % 7 == 0 {
-                    Cell::Alive
-                } else {
-                    Cell::Dead
-                }
-            })
-            .collect();
+
+    pub fn new() -> Universe {
+        let mut cells = [Cell::Dead; SIZE];
+        for (i, cell) in cells.iter_mut().enumerate() {
+            if i % 2 == 0 || i % 7 == 0 {
+                *cell = Cell::Alive
+            }
+        }
+        let cells = DoubleBuffer::new(cells);
+
+        let neighbors = core::array::from_fn::<_, SIZE, _>(|i| {
+            let (row, col) = Universe::get_row_col(i);
+            let north = Universe::get_index(row - 1, col);
+            let ne    = Universe::get_index(row - 1, col + 1);
+            let east  = Universe::get_index(row,     col + 1);
+            let se    = Universe::get_index(row + 1, col + 1);
+            let south = Universe::get_index(row + 1, col);
+            let sw    = Universe::get_index(row + 1, col - 1);
+            let west  = Universe::get_index(row,     col - 1);
+            let nw    = Universe::get_index(row - 1, col - 1);
+            [north, ne, east, se, south, sw, west, nw]
+        });
 
         Universe {
-            width,
-            height,
+            neighbors,
             cells,
         }
     }
 
+    fn get_row_col(index: usize) -> (i32, i32) {
+        let row = index as i32 / WIDTH;
+        let col = index as i32 % WIDTH;
+        (row, col)
+    }
+
     pub fn clear(&mut self) {
-        for cell in self.cells.iter_mut() {
+        let (_, cells) = self.cells.borrow_read_write();
+        for cell in cells.iter_mut() {
             *cell = Cell::Dead;
         }
     }
 
     pub fn randomize(&mut self) {
-        for cell in self.cells.iter_mut() {
+        let (_, cells) = self.cells.borrow_read_write();
+        for cell in cells.iter_mut() {
             let rand = js_sys::Math::random();
             *cell = if rand < 0.3 {
                 Cell::Alive
@@ -59,16 +116,17 @@ impl Universe {
         }
     }
 
-    pub fn width(&self) -> u32 {
-        self.width
+    pub fn width() -> i32 {
+        Universe::WIDTH
     }
 
-    pub fn height(&self) -> u32 {
-        self.height
+    pub fn height() -> i32 {
+        Universe::HEIGHT
     }
 
-    pub fn cells(&self) -> *const Cell {
-        self.cells.as_ptr()
+    pub fn cells(&mut self) -> *const Cell {
+        let cells = self.cells.borrow_write();
+        cells.as_ptr()
     }
 
     pub fn insert_glider_at(&mut self, row: i32, col: i32) {
@@ -106,39 +164,20 @@ impl Universe {
 
     pub fn tick(&mut self) {
 
-        let mut next = self.cells.clone();
+        self.cells.swap_buffers();
 
-        for row in 0..self.height as i32 {
-            for col in 0..self.width as i32 {
-                let idx = self.get_index(row, col);
-                let cell = self.cells[idx];
-                let live_neighbors = self.live_neighbor_count(row, col);
+        let (current, next) = self.cells.borrow_read_write();
 
-                let next_cell = match (cell, live_neighbors) {
-                    // Rule 1: Any live cell with fewer than two live neighbours
-                    // dies, as if caused by underpopulation.
-                    // Rule 2: Any live cell with two or three live neighbours
-                    // lives on to the next generation.
-                    // Rule 3: Any live cell with more than three live
-                    // neighbours dies, as if by overpopulation.
-                    // Rule 4: Any dead cell with exactly three live neighbours
-                    // becomes a live cell, as if by reproduction.
-                    // All other cells remain in the same state.
-                    (Cell::Alive, 2) => Cell::Alive,
-                    (_, 3) => Cell::Alive,
-                    _ => Cell::Dead,
-                };
-
-                next[idx] = next_cell;
-            }
+        for (i, neighbors) in self.neighbors.iter().enumerate() {
+            let live_neighbors = neighbors.iter().filter(|&i| current[*i] == Cell::Alive).count();
+            next[i] = current[i].tick(live_neighbors);
         }
 
-        self.cells = next;
     }
 
-    fn get_index(&self, row: i32, column: i32) -> usize {
-        let width  = self.width  as i32;
-        let height = self.height as i32;
+    fn get_index(row: i32, column: i32) -> usize {
+        let width  = Universe::WIDTH;
+        let height = Universe::HEIGHT;
 
         let row = if row < 0 {
             row + height
@@ -158,64 +197,30 @@ impl Universe {
         (row * width + column) as usize
     }
 
-    fn live_neighbor_count(&self, row: i32, column: i32) -> u8 {
-        let mut count = 0;
-        const NEIGHBOR_DELTA: [[i32; 2]; 8] = [
-            [-1, -1],
-            [-1,  0],
-            [-1,  1],
-            [ 0, -1],
-            [ 0,  1],
-            [ 1, -1],
-            [ 1,  0],
-            [ 1,  1],
-        ];
-        for [delta_row, delta_col] in NEIGHBOR_DELTA {
-            let neighbor_row = row    + delta_row;
-            let neighbor_col = column + delta_col;
-            let idx = self.get_index(neighbor_row, neighbor_col);
-            count += self.cells[idx] as u8;
-        }
-        count
-    }
-
     pub fn toggle_cell(&mut self, row: i32, col: i32) {
-        let idx = self.get_index(row, col);
-        self.cells[idx].toggle();
+        let idx = Universe::get_index(row, col);
+        let (_, cells) = self.cells.borrow_read_write();
+        cells[idx].toggle();
     }
 }
 
 impl Universe {
+    const WIDTH:  i32 = WIDTH;
+    const HEIGHT: i32 = HEIGHT;
     /// Get the dead and alive values of the entire universe.
     pub fn get_cells(&self) -> &[Cell] {
-        &self.cells
+        self.cells.borrow_read()
     }
 
     /// Set cells to be alive in a universe by passing the row and column
     /// of each cell as an array.
     pub fn set_cells(&mut self, cells: &[(i32, i32)]) {
         for &(row, col) in cells.iter() {
-            let idx = self.get_index(row, col);
-            self.cells[idx] = Cell::Alive;
+            let idx = Universe::get_index(row, col);
+            self.cells.borrow_read_write().1[idx] = Cell::Alive;
         }
     }
 
-}
-
-impl fmt::Display for Universe {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        for line in self.cells.chunks(self.width as usize) {
-            for &cell in line {
-                let symbol = match cell {
-                    Cell::Dead  => '◻',
-                    Cell::Alive => '◼',
-                };
-                write!(f, "{symbol}")?;
-            }
-            write!(f, "\n")?;
-        }
-        Ok(())
-    }
 }
 
 impl Cell {
@@ -224,5 +229,22 @@ impl Cell {
             Cell::Alive => Cell::Dead,
             Cell::Dead  => Cell::Alive,
         };
+    }
+
+    fn tick(&self, live_neighbors: usize) -> Cell {
+        match (&self, live_neighbors) {
+            // Rule 1: Any live cell with fewer than two live neighbours
+            // dies, as if caused by underpopulation.
+            // Rule 2: Any live cell with two or three live neighbours
+            // lives on to the next generation.
+            // Rule 3: Any live cell with more than three live
+            // neighbours dies, as if by overpopulation.
+            // Rule 4: Any dead cell with exactly three live neighbours
+            // becomes a live cell, as if by reproduction.
+            // All other cells remain in the same state.
+            (Cell::Alive, 2) => Cell::Alive,
+            (_          , 3) => Cell::Alive,
+            _                => Cell::Dead,
+        }
     }
 }
